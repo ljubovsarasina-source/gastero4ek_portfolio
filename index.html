@@ -382,6 +382,44 @@
             margin-top: 20px;
         }
 
+        .viewport-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .view-modes {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .mode-btn {
+            font-family: "JetBrains Mono", "Inter", monospace;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            padding: 8px 14px;
+            color: #8a9bb8;
+            background: rgba(11, 19, 34, 0.9);
+            border: 1px solid #1b2a44;
+            cursor: pointer;
+            transition: 0.2s;
+            /* скос как у кнопок Calamity */
+            clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+        }
+
+        .mode-btn:hover {
+            color: #fff;
+            border-color: #2b7bff;
+        }
+
+        .mode-btn.active {
+            color: #061018;
+            background: #2b7bff;
+            border-color: #2b7bff;
+        }
+
         .viewport {
             height: 460px;
             overflow: hidden;
@@ -644,14 +682,27 @@
 
                     <div class="featured-grid">
                         <div>
-                            <div class="viewport">
-                                <model-viewer
-                                    src="model.glb"
-                                    alt="Интерактивная 3D-модель меча Guts Sword"
-                                    camera-controls
-                                    auto-rotate
-                                    shadow-intensity="1">
-                                </model-viewer>
+                            <div class="viewport-wrap">
+                                <!-- Кнопки режимов просмотра -->
+                                <div class="view-modes">
+                                    <button class="mode-btn active" data-mode="textured" type="button">Textured</button>
+                                    <button class="mode-btn" data-mode="wireframe" type="button">Wireframe</button>
+                                    <button class="mode-btn" data-mode="clay" type="button">Clay</button>
+                                    <button class="mode-btn" data-mode="rotate" id="btn-rotate" type="button">Auto-Rotate</button>
+                                </div>
+
+                                <div class="viewport">
+                                    <model-viewer
+                                        id="sword-viewer"
+                                        src="model.glb"
+                                        alt="Интерактивная 3D-модель меча Guts Sword"
+                                        camera-controls
+                                        auto-rotate
+                                        shadow-intensity="1.5"
+                                        exposure="1.2"
+                                        touch-action="pan-y">
+                                    </model-viewer>
+                                </div>
                             </div>
 
                             <p class="viewer-hint">
@@ -750,6 +801,135 @@
             items.forEach((item) => observer.observe(item));
             document.documentElement.classList.add("js");
         }
+
+        const mv = document.getElementById('sword-viewer');
+        let originalMaterials = null; // сюда сохраним исходные материалы
+        let wireframeOn = false;
+        let clayOn = false;
+
+        // Ждём загрузки модели
+        mv.addEventListener('load', () => {
+            // Сохраняем оригинальные параметры материалов
+            originalMaterials = mv.model.materials.map(mat => ({
+                baseColor: mat.pbrMetallicRoughness.baseColorFactor.slice(),
+                metallic: mat.pbrMetallicRoughness.metallicFactor,
+                roughness: mat.pbrMetallicRoughness.roughnessFactor,
+            }));
+        });
+
+        // Достаём Three.js-сцену из model-viewer (для wireframe)
+        function getMeshes() {
+            const scene = mv[Object.getOwnPropertySymbols(mv).find(s =>
+                s.toString().includes('Scene') || s.description === 'scene'
+            )];
+            // запасной путь через model
+            const root = scene || mv.model;
+            const meshes = [];
+            if (!root) return meshes;
+
+            const walk = (obj) => {
+                if (obj.isMesh) meshes.push(obj);
+                if (obj.children) obj.children.forEach(walk);
+                // scene-graph API
+                if (obj.primitives) obj.primitives.forEach(p => { if (p) meshes.push(p); });
+            };
+
+            // model-viewer internal three scene
+            try {
+                const threeScene = mv.model?.scene || mv.model;
+                if (threeScene?.traverse) {
+                    threeScene.traverse(child => {
+                        if (child.isMesh) meshes.push(child);
+                    });
+                }
+            } catch (e) {}
+
+            // ещё один рабочий способ для model-viewer 3.x
+            if (meshes.length === 0 && mv.model?.materials) {
+                // wireframe через materials API не всегда доступен —
+                // используем fallback ниже
+            }
+            return meshes;
+        }
+
+        function setTextured() {
+            if (!mv.model || !originalMaterials) return;
+            mv.model.materials.forEach((mat, i) => {
+                const o = originalMaterials[i];
+                mat.pbrMetallicRoughness.setBaseColorFactor(o.baseColor);
+                mat.pbrMetallicRoughness.setMetallicFactor(o.metallic);
+                mat.pbrMetallicRoughness.setRoughnessFactor(o.roughness);
+            });
+            setWireframeThree(false);
+        }
+
+        function setClay() {
+            if (!mv.model) return;
+            mv.model.materials.forEach(mat => {
+                mat.pbrMetallicRoughness.setBaseColorFactor([0.72, 0.74, 0.78, 1]);
+                mat.pbrMetallicRoughness.setMetallicFactor(0);
+                mat.pbrMetallicRoughness.setRoughnessFactor(0.95);
+            });
+            setWireframeThree(false);
+        }
+
+        function setWireframeThree(enabled) {
+            // Надёжный способ: лезем во внутренний Three.js
+            const symbols = Object.getOwnPropertySymbols(mv);
+            let found = false;
+
+            for (const sym of symbols) {
+                try {
+                    const val = mv[sym];
+                    if (val && typeof val.traverse === 'function') {
+                        val.traverse(child => {
+                            if (child.isMesh && child.material) {
+                                const mats = Array.isArray(child.material)
+                                    ? child.material
+                                    : [child.material];
+                                mats.forEach(m => { m.wireframe = enabled; });
+                                found = true;
+                            }
+                        });
+                    }
+                } catch (e) {}
+            }
+
+            // Fallback: если internal scene не нашли — хотя бы clay-контур
+            if (!found && enabled) {
+                setClay();
+                console.warn('Wireframe: Three.js scene not exposed, used Clay fallback');
+            }
+        }
+
+        // Клики по кнопкам
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const mode = btn.dataset.mode;
+
+                // Auto-rotate — отдельный тогл
+                if (mode === 'rotate') {
+                    const on = !mv.hasAttribute('auto-rotate');
+                    if (on) mv.setAttribute('auto-rotate', '');
+                    else mv.removeAttribute('auto-rotate');
+                    btn.classList.toggle('active', on);
+                    return;
+                }
+
+                // Обычные режимы — одна активная кнопка
+                document.querySelectorAll('.mode-btn:not(#btn-rotate)').forEach(b =>
+                    b.classList.remove('active')
+                );
+                btn.classList.add('active');
+
+                if (mode === 'textured') setTextured();
+                if (mode === 'clay') setClay();
+                if (mode === 'wireframe') {
+                    setTextured();          // сначала вернуть текстуры
+                    setWireframeThree(true); // потом включить линии
+                }
+            });
+        });
     </script>
 </body>
 </html>
